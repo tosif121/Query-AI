@@ -9,9 +9,6 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  env: {
-    GEMINI_API_KEY: 'AIzaSyDJ814rcw5z5kdjLvDWcMb_ajvYaxHLT0g',
-  },
 };
 
 export default nextConfig;
