@@ -9,15 +9,17 @@ export const config = {
   },
 };
 
+const sanitizeInput = (text) => {
+  return text.replace(/[^a-zA-Z0-9 .,!?]/g, '').trim();
+};
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    const form = formidable({
-      maxFileSize: 10 * 1024 * 1024,
-    });
+    const form = formidable({ maxFileSize: 10 * 1024 * 1024 });
 
     const [fields, files] = await new Promise((resolve, reject) => {
       form.parse(req, (err, fields, files) => {
@@ -38,7 +40,7 @@ export default async function handler(req, res) {
       logger: (m) => console.log(m),
     });
 
-    const extractedText = ocrResult.data.text;
+    const extractedText = sanitizeInput(ocrResult.data.text);
 
     if (!extractedText) {
       return res.status(400).json({ error: 'No text found in the image' });
@@ -47,18 +49,30 @@ export default async function handler(req, res) {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-    const prompt = `${userText}\n\nText extracted from image: ${extractedText}`;
+    const defaultPrompt = 'Please analyze the following content safely.';
+    const prompt = `${sanitizeInput(userText) || defaultPrompt}\n\nText extracted from image: ${extractedText || defaultPrompt}`;
 
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const aiResponse = response.text();
+    try {
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const aiResponse = response.text();
 
-    await fs.unlink(imageFile.filepath).catch(console.error);
+      await fs.unlink(imageFile.filepath).catch(console.error);
 
-    return res.status(200).json({
-      extractedText,
-      answer: aiResponse,
-    });
+      return res.status(200).json({
+        extractedText,
+        answer: aiResponse,
+      });
+    } catch (error) {
+      if (error.message.includes('SAFETY')) {
+        console.log('Flagged Prompt:', prompt);
+        return res.status(400).json({
+          extractedText,
+          answer: 'The AI could not generate a response due to content safety concerns.',
+        });
+      }
+      throw error;
+    }
   } catch (error) {
     console.error('API Error:', error);
     return res.status(500).json({ error: error.message });
