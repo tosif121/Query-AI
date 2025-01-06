@@ -10,7 +10,9 @@ export const config = {
 };
 
 const sanitizeInput = (text) => {
-  return text.replace(/[^a-zA-Z0-9 .,!?]/g, '').trim();
+  // Add null check and string conversion
+  if (!text) return '';
+  return String(text).replace(/[^a-zA-Z0-9 .,!?]/g, '').trim();
 };
 
 export default async function handler(req, res) {
@@ -29,7 +31,8 @@ export default async function handler(req, res) {
     });
 
     const imageFile = files.image?.[0];
-    const userText = fields.text || '';
+    // Ensure text is a string or empty string
+    const userText = fields.text?.[0] || '';
 
     if (!imageFile) {
       return res.status(400).json({ error: 'No image provided' });
@@ -57,6 +60,7 @@ export default async function handler(req, res) {
       const response = await result.response;
       const aiResponse = response.text();
 
+      // Ensure cleanup happens even if response fails
       await fs.unlink(imageFile.filepath).catch(console.error);
 
       return res.status(200).json({
@@ -64,7 +68,10 @@ export default async function handler(req, res) {
         answer: aiResponse,
       });
     } catch (error) {
-      if (error.message.includes('SAFETY')) {
+      // Ensure cleanup on error
+      await fs.unlink(imageFile.filepath).catch(console.error);
+
+      if (error.message?.includes('SAFETY')) {
         console.log('Flagged Prompt:', prompt);
         return res.status(400).json({
           extractedText,
@@ -75,6 +82,6 @@ export default async function handler(req, res) {
     }
   } catch (error) {
     console.error('API Error:', error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message || 'Internal server error' });
   }
 }
