@@ -11,6 +11,12 @@ const nextConfig = {
   env: {
     GEMINI_API_KEY: 'AIzaSyByz1kX_BkBcjmgvtSPfQlSvOeDUqyqgAI',
   },
+  experimental: {
+    serverComponentsExternalPackages: ['tesseract.js'],
+    outputFileTracingIncludes: {
+      '/api/**/*': ['./node_modules/**/*.wasm', './node_modules/**/*.proto'],
+    },
+  },
 };
 
 export default nextConfig;
