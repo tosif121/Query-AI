@@ -2,6 +2,7 @@ import formidable from 'formidable';
 import fs from 'fs/promises';
 import Tesseract from 'tesseract.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import sharp from 'sharp';
 
 export const config = {
   api: {
@@ -9,10 +10,40 @@ export const config = {
   },
 };
 
+const preprocessImage = async (inputBuffer) => {
+  try {
+    return await sharp(inputBuffer)
+      .grayscale()
+      .normalize()
+      .median(1)
+      .resize(2000, null, {
+        withoutEnlargement: true,
+        fit: 'inside',
+      })
+      .toBuffer();
+  } catch (error) {
+    console.error('Image preprocessing failed:', error);
+    return inputBuffer;
+  }
+};
+
 const sanitizeInput = (text) => {
-  // Add null check and string conversion
   if (!text) return '';
-  return String(text).replace(/[^a-zA-Z0-9 .,!?]/g, '').trim();
+  return String(text)
+    .replace(/[^\w\s.,!?;:'"()\-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const improveOCRAccuracy = (text) => {
+  if (!text) return '';
+  return text
+    .replace(/[|]/g, 'I')
+    .replace(/[£]/g, 'E')
+    .replace(/[0]/g, 'O')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 };
 
 export default async function handler(req, res) {
@@ -21,7 +52,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const form = formidable({ maxFileSize: 10 * 1024 * 1024 });
+    const form = formidable({
+      maxFileSize: 10 * 1024 * 1024,
+      keepExtensions: true,
+      filter: function ({ name, originalFilename, mimetype }) {
+        return mimetype && mimetype.includes('image');
+      },
+    });
 
     const [fields, files] = await new Promise((resolve, reject) => {
       form.parse(req, (err, fields, files) => {
@@ -31,19 +68,24 @@ export default async function handler(req, res) {
     });
 
     const imageFile = files.image?.[0];
-    // Ensure text is a string or empty string
     const userText = fields.text?.[0] || '';
 
     if (!imageFile) {
       return res.status(400).json({ error: 'No image provided' });
     }
 
-    const imageBuffer = await fs.readFile(imageFile.filepath);
-    const ocrResult = await Tesseract.recognize(imageBuffer, 'eng', {
+    const originalBuffer = await fs.readFile(imageFile.filepath);
+    const processedBuffer = await preprocessImage(originalBuffer);
+
+    const ocrResult = await Tesseract.recognize(processedBuffer, 'eng', {
       logger: (m) => console.log(m),
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,!? ',
+      tessedit_pageseg_mode: Tesseract.PSM.AUTO_OSD,
+      tessjs_create_pdf: '0',
+      tessjs_create_hocr: '0',
     });
 
-    const extractedText = sanitizeInput(ocrResult.data.text);
+    const extractedText = improveOCRAccuracy(sanitizeInput(ocrResult.data.text));
 
     if (!extractedText) {
       return res.status(400).json({ error: 'No text found in the image' });
@@ -53,22 +95,23 @@ export default async function handler(req, res) {
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
     const defaultPrompt = 'Please analyze the following content safely.';
-    const prompt = `${sanitizeInput(userText) || defaultPrompt}\n\nText extracted from image: ${extractedText || defaultPrompt}`;
+    const prompt = `${sanitizeInput(userText) || defaultPrompt}\n\nText extracted from image: ${
+      extractedText || defaultPrompt
+    }`;
 
     try {
       const result = await model.generateContent(prompt);
       const response = await result.response;
       const aiResponse = response.text();
 
-      // Ensure cleanup happens even if response fails
       await fs.unlink(imageFile.filepath).catch(console.error);
 
       return res.status(200).json({
         extractedText,
         answer: aiResponse,
+        confidence: ocrResult.data.confidence,
       });
     } catch (error) {
-      // Ensure cleanup on error
       await fs.unlink(imageFile.filepath).catch(console.error);
 
       if (error.message?.includes('SAFETY')) {
