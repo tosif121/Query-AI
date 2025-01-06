@@ -1,6 +1,6 @@
 import formidable from 'formidable';
 import fs from 'fs/promises';
-import Tesseract from 'tesseract.js';
+import { createWorker } from 'tesseract.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export const config = {
@@ -13,6 +13,8 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  let worker = null;
 
   try {
     const form = formidable({
@@ -33,12 +35,13 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'No image provided' });
     }
 
-    const imageBuffer = await fs.readFile(imageFile.filepath);
-    const ocrResult = await Tesseract.recognize(imageBuffer, 'eng', {
-      logger: (m) => console.log(m),
-    });
+    worker = await createWorker('eng');
 
-    const extractedText = ocrResult.data.text;
+    const imageBuffer = await fs.readFile(imageFile.filepath);
+
+    const {
+      data: { text: extractedText },
+    } = await worker.recognize(imageBuffer);
 
     if (!extractedText) {
       return res.status(400).json({ error: 'No text found in the image' });
@@ -53,6 +56,7 @@ export default async function handler(req, res) {
     const response = await result.response;
     const aiResponse = response.text();
 
+    await worker.terminate();
     await fs.unlink(imageFile.filepath).catch(console.error);
 
     return res.status(200).json({
@@ -60,6 +64,9 @@ export default async function handler(req, res) {
       answer: aiResponse,
     });
   } catch (error) {
+    if (worker) {
+      await worker.terminate().catch(console.error);
+    }
     console.error('API Error:', error);
     return res.status(500).json({ error: error.message });
   }
